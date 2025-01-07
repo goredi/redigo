@@ -51,72 +51,71 @@ var (
 // request handlers using a package level variable. The pool configuration used
 // here is an example, not a recommendation.
 //
-//  func newPool(addr string) *redis.Pool {
-//    return &redis.Pool{
-//      MaxIdle: 3,
-//      IdleTimeout: 240 * time.Second,
-//      // Dial or DialContext must be set. When both are set, DialContext takes precedence over Dial.
-//      Dial: func () (redis.Conn, error) { return redis.Dial("tcp", addr) },
-//    }
-//  }
+//	func newPool(addr string) *redis.Pool {
+//	  return &redis.Pool{
+//	    MaxIdle: 3,
+//	    IdleTimeout: 240 * time.Second,
+//	    // Dial or DialContext must be set. When both are set, DialContext takes precedence over Dial.
+//	    Dial: func () (redis.Conn, error) { return redis.Dial("tcp", addr) },
+//	  }
+//	}
 //
-//  var (
-//    pool *redis.Pool
-//    redisServer = flag.String("redisServer", ":6379", "")
-//  )
+//	var (
+//	  pool *redis.Pool
+//	  redisServer = flag.String("redisServer", ":6379", "")
+//	)
 //
-//  func main() {
-//    flag.Parse()
-//    pool = newPool(*redisServer)
-//    ...
-//  }
+//	func main() {
+//	  flag.Parse()
+//	  pool = newPool(*redisServer)
+//	  ...
+//	}
 //
 // A request handler gets a connection from the pool and closes the connection
 // when the handler is done:
 //
-//  func serveHome(w http.ResponseWriter, r *http.Request) {
-//      conn := pool.Get()
-//      defer conn.Close()
-//      ...
-//  }
+//	func serveHome(w http.ResponseWriter, r *http.Request) {
+//	    conn := pool.Get()
+//	    defer conn.Close()
+//	    ...
+//	}
 //
 // Use the Dial function to authenticate connections with the AUTH command or
 // select a database with the SELECT command:
 //
-//  pool := &redis.Pool{
-//    // Other pool configuration not shown in this example.
-//    Dial: func () (redis.Conn, error) {
-//      c, err := redis.Dial("tcp", server)
-//      if err != nil {
-//        return nil, err
-//      }
-//      if _, err := c.Do("AUTH", password); err != nil {
-//        c.Close()
-//        return nil, err
-//      }
-//      if _, err := c.Do("SELECT", db); err != nil {
-//        c.Close()
-//        return nil, err
-//      }
-//      return c, nil
-//    },
-//  }
+//	pool := &redis.Pool{
+//	  // Other pool configuration not shown in this example.
+//	  Dial: func () (redis.Conn, error) {
+//	    c, err := redis.Dial("tcp", server)
+//	    if err != nil {
+//	      return nil, err
+//	    }
+//	    if _, err := c.Do("AUTH", password); err != nil {
+//	      c.Close()
+//	      return nil, err
+//	    }
+//	    if _, err := c.Do("SELECT", db); err != nil {
+//	      c.Close()
+//	      return nil, err
+//	    }
+//	    return c, nil
+//	  },
+//	}
 //
 // Use the TestOnBorrow function to check the health of an idle connection
 // before the connection is returned to the application. This example PINGs
 // connections that have been idle more than a minute:
 //
-//  pool := &redis.Pool{
-//    // Other pool configuration not shown in this example.
-//    TestOnBorrow: func(c redis.Conn, t time.Time) error {
-//      if time.Since(t) < time.Minute {
-//        return nil
-//      }
-//      _, err := c.Do("PING")
-//      return err
-//    },
-//  }
-//
+//	pool := &redis.Pool{
+//	  // Other pool configuration not shown in this example.
+//	  TestOnBorrow: func(c redis.Conn, t time.Time) error {
+//	    if time.Since(t) < time.Minute {
+//	      return nil
+//	    }
+//	    _, err := c.Do("PING")
+//	    return err
+//	  },
+//	}
 type Pool struct {
 	// Dial is an application supplied function for creating and configuring a
 	// connection.
@@ -166,6 +165,10 @@ type Pool struct {
 	// Close connections older than this duration. If the value is zero, then
 	// the pool does not close connections based on age.
 	MaxConnLifetime time.Duration
+
+	// StartupIdle is value for heating pool before running application
+	// Use HeatPool() for adding new connections in pool before staring your application
+	StartupIdle int
 
 	mu           sync.Mutex    // mu protects the following fields
 	closed       bool          // set to true when the pool is closed.
@@ -432,6 +435,34 @@ func (p *Pool) put(pc *poolConn, forceClose bool) error {
 		p.ch <- struct{}{}
 	}
 	p.mu.Unlock()
+	return nil
+}
+
+func (p *Pool) HeatPool(ctx context.Context) error {
+	if p.StartupIdle == 0 {
+		return nil
+	}
+
+	if p.StartupIdle >= p.MaxIdle {
+		return errors.New("redigo: min idle greater or equals than max idle")
+	}
+
+	for i := 0; i < p.StartupIdle; i++ {
+		c, err := p.dial(ctx)
+		if err != nil {
+			return err
+		}
+
+		p.mu.Lock()
+		p.active++
+		p.mu.Unlock()
+
+		err = p.put(&poolConn{c: c, created: nowFunc()}, false)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

@@ -1077,6 +1077,34 @@ func TestPoolGetContext_DialContext(t *testing.T) {
 	}
 }
 
+func TestPool_HeatPool(t *testing.T) {
+	f := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return &testConn{}, nil
+	}
+
+	p := &redis.Pool{
+		StartupIdle: 4,
+		MaxIdle:     10,
+		Dial: func() (redis.Conn, error) {
+			return redis.Dial("", "", redis.DialContextFunc(f))
+		},
+	}
+	defer p.Close()
+
+	err = p.HeatPool(context.Background())
+	if err != nil {
+		t.Fatalf("HeatPool returned %v", err)
+	}
+
+	if p.Stats().IdleCount != p.StartupIdle {
+		t.Fatalf("Idle conns not equal min idle after heat")
+	}
+
+	if p.Stats().ActiveCount < 4 {
+		t.Fatal("active conn less then min IDLE")
+	}
+}
+
 func TestPoolGetContext_DialContext_CanceledContext(t *testing.T) {
 	addr, err := redis.DefaultServerAddr()
 	if err != nil {
