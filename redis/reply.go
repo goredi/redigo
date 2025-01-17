@@ -504,6 +504,32 @@ func Float64Map(result interface{}, err error) (map[string]float64, error) {
 	return m, err
 }
 
+// Float64Map is a helper that converts an array of strings (alternating key, value)
+// into a map[string]Float64Map. The HGETALL commands return replies in this format.
+// Requires an even number of values in result.
+func Float64Map(result interface{}, err error) (map[string]float64, error) {
+	values, err := Values(result, err)
+	if err != nil {
+		return nil, err
+	}
+	if len(values)%2 != 0 {
+		return nil, errors.New("redigo: Float64Map expects even number of values result")
+	}
+	m := make(map[string]float64, len(values)/2)
+	for i := 0; i < len(values); i += 2 {
+		key, ok := values[i].([]byte)
+		if !ok {
+			return nil, errors.New("redigo: Float64Map key not a bulk string value")
+		}
+		value, err := Float64(values[i+1], nil)
+		if err != nil {
+			return nil, err
+		}
+		m[string(key)] = value
+	}
+	return m, nil
+}
+
 // Positions is a helper that converts an array of positions (lat, long)
 // into a [][2]float64. The GEOPOS command returns replies in this format.
 func Positions(result interface{}, err error) ([]*[2]float64, error) {
