@@ -21,7 +21,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"regexp"
@@ -40,10 +39,11 @@ var (
 	ErrNegativeInt = errNegativeInt
 
 	serverPath     = flag.String("redis-server", "redis-server", "Path to redis server binary")
-	serverAddress  = flag.String("redis-address", "127.0.0.1", "The address of the server")
+	serverAddress  = flag.String("redis-address", "127.0.0.1", "The TCP address of the server")
 	serverBasePort = flag.Int("redis-port", 16379, "Beginning of port range for test servers")
+	serverSocket   = flag.String("redis-socket", "./server.sock", "The UNIX socket of the server")
 	serverLogName  = flag.String("redis-log", "", "Write Redis server logs to `filename`")
-	serverLog      = ioutil.Discard
+	serverLog      = io.Discard
 
 	defaultServerMu  sync.Mutex
 	defaultServer    *Server
@@ -190,6 +190,7 @@ func DefaultServerAddr() (string, error) {
 		"default",
 		"--port", strconv.Itoa(*serverBasePort),
 		"--bind", *serverAddress,
+		"--unixsocket", *serverSocket,
 		"--save", "",
 		"--appendonly", "no")
 	return addr, defaultServerErr

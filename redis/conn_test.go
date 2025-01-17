@@ -23,10 +23,11 @@ import (
 	"io"
 	"math"
 	"net"
-	"sync"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -661,6 +662,8 @@ func TestDialURLHost(t *testing.T) {
 	}
 }
 
+var workingDirectory, _ = os.Getwd()
+
 var dialURLTests = []struct {
 	description string
 	url         string
@@ -680,6 +683,9 @@ var dialURLTests = []struct {
 	{"database 3", "redis://localhost/3", "+OK\r\n", "*2\r\n$6\r\nSELECT\r\n$1\r\n3\r\n"},
 	{"database 99", "redis://localhost/99", "+OK\r\n", "*2\r\n$6\r\nSELECT\r\n$2\r\n99\r\n"},
 	{"no database", "redis://localhost/", "+OK\r\n", ""},
+	{"absolute socket path", "redis+unix://" + filepath.Join(workingDirectory, "server.sock"), "+OK\r\n", ""},
+	{"relative socket path", "redis+unix://./server.sock", "+OK\r\n", ""},
+	{"unix socket path database 99", "redis+unix://./server.sock?db=99", "+OK\r\n", "*2\r\n$6\r\nSELECT\r\n$2\r\n99\r\n"},
 }
 
 func TestDialURL(t *testing.T) {
