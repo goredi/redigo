@@ -23,10 +23,10 @@ import (
 	"io"
 	"math"
 	"net"
-	"sync"
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -974,33 +974,55 @@ func TestExecError(t *testing.T) {
 	}
 }
 
-func BenchmarkDoEmpty(b *testing.B) {
-	b.StopTimer()
+func BenchmarkConnDo(b *testing.B) {
 	c, err := redis.DialDefaultServer()
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
 	defer c.Close()
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := c.Do(""); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
 
-func BenchmarkDoPing(b *testing.B) {
-	b.StopTimer()
-	c, err := redis.DialDefaultServer()
-	if err != nil {
-		b.Fatal(err)
+	// Setup required data.
+	_, err = c.Do("MSET", "foo", "bar", "bar", "baz")
+	require.NoError(b, err)
+	_, err = c.Do("HMSET", "hfoo", "bar", "baz", "qux", "quux", "thing", "bob")
+	require.NoError(b, err)
+
+	tests := map[string]struct {
+		cmd  string
+		args []interface{}
+	}{
+		"set": {
+			cmd:  "SET",
+			args: []interface{}{"foo", "bar"},
+		},
+		"get": {
+			cmd:  "GET",
+			args: []interface{}{"foo"},
+		},
+		"mget": {
+			cmd:  "MGET",
+			args: []interface{}{"foo", "bar"},
+		},
+		"hmset": {
+			cmd:  "HMSET",
+			args: []interface{}{"hfoo", "bar", "baz", "qux", "baz1", "qux1", "stuff"},
+		},
+		"hgetall": {
+			cmd:  "HGETALL",
+			args: []interface{}{"hfoo"},
+		},
+		"blank": {
+			cmd: "",
+		},
+		"ping": {
+			cmd: "PING",
+		},
 	}
-	defer c.Close()
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := c.Do("PING"); err != nil {
-			b.Fatal(err)
-		}
+	for name, tc := range tests {
+		b.Run(name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				_, err := c.Do(tc.cmd, tc.args...)
+				require.NoError(b, err)
+			}
+		})
 	}
 }
 

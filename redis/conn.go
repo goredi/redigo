@@ -32,15 +32,19 @@ import (
 
 var (
 	_ ConnWithTimeout = (*conn)(nil)
+	_ ConnWithContext = (*conn)(nil)
 )
 
 // conn is the low-level implementation of Conn
 type conn struct {
 	// Shared
+	conn net.Conn
+
+	// Mutex protected fields.
 	mu      sync.Mutex
-	pending int
 	err     error
-	conn    net.Conn
+	pending int
+	state   connectionState
 
 	// Read
 	readTimeout time.Duration
@@ -679,10 +683,18 @@ func (c *conn) readReply() (interface{}, error) {
 	return nil, protocolError("unexpected response line")
 }
 
+func (c *conn) stateUpdate(cmd string, args ...interface{}) {
+	c.state.update(connActions, true, cmd, args...)
+}
+
 func (c *conn) Send(cmd string, args ...interface{}) error {
 	c.mu.Lock()
-	c.pending += 1
+	c.stateUpdate(cmd, args...)
+	if c.state&(stateClientReplyOff|stateClientReplySkipNext|stateClientReplySkip) == 0 {
+		c.pending += 1
+	}
 	c.mu.Unlock()
+
 	if c.writeTimeout != 0 {
 		if err := c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
 			return c.fatal(err)
@@ -745,13 +757,14 @@ func (c *conn) ReceiveWithTimeout(timeout time.Duration) (reply interface{}, err
 	if timeout != 0 {
 		deadline = time.Now().Add(timeout)
 	}
-	if err := c.conn.SetReadDeadline(deadline); err != nil {
+	if err = c.conn.SetReadDeadline(deadline); err != nil {
 		return nil, c.fatal(err)
 	}
 
 	if reply, err = c.readReply(); err != nil {
 		return nil, c.fatal(err)
 	}
+
 	// When using pub/sub, the number of receives can be greater than the
 	// number of sends. To enable normal use of the connection after
 	// unsubscribing from all channels, we do not decrement pending to a
@@ -764,10 +777,12 @@ func (c *conn) ReceiveWithTimeout(timeout time.Duration) (reply interface{}, err
 		c.pending -= 1
 	}
 	c.mu.Unlock()
+
 	if err, ok := reply.(Error); ok {
 		return nil, err
 	}
-	return
+
+	return reply, nil
 }
 
 func (c *conn) Do(cmd string, args ...interface{}) (interface{}, error) {
@@ -805,9 +820,15 @@ func (c *conn) DoContext(ctx context.Context, cmd string, args ...interface{}) (
 }
 
 func (c *conn) DoWithTimeout(readTimeout time.Duration, cmd string, args ...interface{}) (interface{}, error) {
+	var doPending int
 	c.mu.Lock()
+	c.stateUpdate(cmd, args...)
 	pending := c.pending
 	c.pending = 0
+	if cmd != "" && c.state&(stateClientReplyOff|stateClientReplySkipNext|stateClientReplySkip) == 0 {
+		// Do is expecting a reply.
+		doPending = 1
+	}
 	c.mu.Unlock()
 
 	if cmd == "" && pending == 0 {
@@ -839,6 +860,7 @@ func (c *conn) DoWithTimeout(readTimeout time.Duration, cmd string, args ...inte
 	}
 
 	if cmd == "" {
+		// Empty command indicates we want to ensure unread replies from Send are read.
 		reply := make([]interface{}, pending)
 		for i := range reply {
 			r, e := c.readReply()
@@ -850,16 +872,20 @@ func (c *conn) DoWithTimeout(readTimeout time.Duration, cmd string, args ...inte
 		return reply, nil
 	}
 
+	// Read all pending replies, from previous Send and the current Do.
 	var err error
 	var reply interface{}
-	for i := 0; i <= pending; i++ {
+	pending += doPending
+	for i := 0; i < pending; i++ {
 		var e error
 		if reply, e = c.readReply(); e != nil {
 			return nil, c.fatal(e)
 		}
 		if e, ok := reply.(Error); ok && err == nil {
+			// First non-nil error is the error we will return.
 			err = e
 		}
 	}
+
 	return reply, err
 }
