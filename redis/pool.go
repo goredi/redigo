@@ -147,6 +147,10 @@ type Pool struct {
 	// closed.
 	TestOnBorrowContext func(ctx context.Context, c Conn, lastUsed time.Time) error
 
+	// Lifo is a boolean value which determines the order in which the connections
+	// idle connection in the pool method, True: pushBack, False: pushFront, default False
+	Lifo bool
+
 	// Maximum number of idle connections in the pool.
 	MaxIdle int
 
@@ -218,17 +222,7 @@ func (p *Pool) GetContext(ctx context.Context) (Conn, error) {
 	}
 
 	// Prune stale connections at the back of the idle list.
-	if p.IdleTimeout > 0 {
-		n := p.idle.count
-		for i := 0; i < n && p.idle.back != nil && p.idle.back.t.Add(p.IdleTimeout).Before(nowFunc()); i++ {
-			pc := p.idle.back
-			p.idle.popBack()
-			p.mu.Unlock()
-			pc.c.Close()
-			p.mu.Lock()
-			p.active--
-		}
-	}
+	p.pruneConn()
 
 	// Get idle connection from the front of idle list.
 	for p.idle.front != nil {
@@ -271,6 +265,32 @@ func (p *Pool) GetContext(ctx context.Context) (Conn, error) {
 		return errorConn{err}, err
 	}
 	return &activeConn{p: p, pc: &poolConn{c: c, created: nowFunc()}}, nil
+}
+
+func (p *Pool) pruneConn() {
+	if p.IdleTimeout <= 0 {
+		return
+	}
+	n := p.idle.count
+	if p.Lifo {
+		for i := 0; i < n && p.idle.front != nil && p.idle.front.t.Add(p.IdleTimeout).Before(nowFunc()); i++ {
+			pc := p.idle.front
+			p.idle.popFront()
+			p.mu.Unlock()
+			pc.c.Close()
+			p.mu.Lock()
+			p.active--
+		}
+	} else {
+		for i := 0; i < n && p.idle.back != nil && p.idle.back.t.Add(p.IdleTimeout).Before(nowFunc()); i++ {
+			pc := p.idle.back
+			p.idle.popBack()
+			p.mu.Unlock()
+			pc.c.Close()
+			p.mu.Lock()
+			p.active--
+		}
+	}
 }
 
 // PoolStats contains pool statistics.
@@ -412,10 +432,21 @@ func (p *Pool) put(pc *poolConn, forceClose bool) error {
 	p.mu.Lock()
 	if !p.closed && !forceClose {
 		pc.t = nowFunc()
-		p.idle.pushFront(pc)
+
+		if p.Lifo {
+			p.idle.pushBack(pc)
+		} else {
+			p.idle.pushFront(pc)
+		}
+
 		if p.idle.count > p.MaxIdle {
-			pc = p.idle.back
-			p.idle.popBack()
+			if p.Lifo {
+				pc = p.idle.front
+				p.idle.popFront()
+			} else {
+				pc = p.idle.back
+				p.idle.popBack()
+			}
 		} else {
 			pc = nil
 		}
@@ -647,6 +678,20 @@ func (l *idleList) pushFront(pc *poolConn) {
 		l.front.prev = pc
 	}
 	l.front = pc
+	l.count++
+}
+
+// idle connect push list back
+func (l *idleList) pushBack(pc *poolConn) {
+	pc.next = nil
+	if l.count == 0 {
+		l.front = pc
+		pc.prev = nil
+	} else {
+		pc.prev = l.back
+		l.back.next = pc
+	}
+	l.back = pc
 	l.count++
 }
 
